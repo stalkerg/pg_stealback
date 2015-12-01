@@ -57,6 +57,10 @@
 #define ERROR_PG_RUNNING		25	/* PostgreSQL server is running */
 #define ERROR_PID_BROKEN		26	/* postmaster.pid file is broken */
 
+#ifdef PG_CRC32C_H
+#	define pg_crc32 pg_crc32c
+#endif
+
 /* backup mode file */
 typedef struct pgFile
 {

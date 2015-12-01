@@ -141,21 +141,34 @@ pgFileGetCRC(pgFile *file)
 			file->path, strerror(errno));
 
 	/* calc CRC of backup file */
+#ifdef PG_CRC32C_H
+	INIT_CRC32C(crc);
+#else
 	INIT_CRC32(crc);
+#endif
 	while ((len = fread(buf, 1, sizeof(buf), fp)) == sizeof(buf))
 	{
 		if (interrupted)
 			elog(ERROR_INTERRUPTED, _("interrupted during CRC calculation"));
+#ifdef PG_CRC32C_H
+		COMP_CRC32C(crc, buf, len);
+#else
 		COMP_CRC32(crc, buf, len);
+#endif
 	}
 	errno_tmp = errno;
 	if (!feof(fp))
 		elog(WARNING, _("can't read \"%s\": %s"), file->path,
 			strerror(errno_tmp));
+#ifdef PG_CRC32C_H
+	if (len > 0)
+		COMP_CRC32C(crc, buf, len);
+	FIN_CRC32C(crc);
+#else
 	if (len > 0)
 		COMP_CRC32(crc, buf, len);
 	FIN_CRC32(crc);
-
+#endif
 	fclose(fp);
 
 	return crc;
