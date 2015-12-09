@@ -679,23 +679,13 @@ get_current_timeline(void)
 	close(fd);
 
 	/* Check the CRC. */
-#ifdef PG_CRC32C_H
 	INIT_CRC32C(crc);
 	COMP_CRC32C(crc,
-				(char *) &ControlFile,
-				offsetof(ControlFileData, crc));
+		   	(char *) &ControlFile,
+		   	offsetof(ControlFileData, crc));
 	FIN_CRC32C(crc);
 
 	if (!EQ_CRC32C(crc, ControlFile.crc))
-#else
-	INIT_CRC32(crc);
-	COMP_CRC32(crc,
-			   (char *) &ControlFile,
-			   offsetof(ControlFileData, crc));
-	FIN_CRC32(crc);
-
-	if (!EQ_CRC32(crc, ControlFile.crc))
-#endif
 	{
 		elog(WARNING, _("Calculated CRC checksum does not match value stored in file.\n"
 			"Either the file is corrupt, or it has a different layout than this program\n"
