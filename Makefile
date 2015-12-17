@@ -15,6 +15,9 @@ SRCS = \
 	util.c \
 	validate.c \
 	xlog.c \
+	datapagemap.c \
+	parsexlog.c \
+	xlogreader.c \
 	pgut/pgut.c \
 	pgut/pgut-port.c
 OBJS = $(SRCS:.c=.o)

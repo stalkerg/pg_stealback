@@ -177,10 +177,10 @@ base_backup_found:
 	/* restore following differential backup */
 	if (verbose)
 		printf(_("searching differential backup...\n"));
+
 	for (i = base_index - 1; i >= 0; i--)
 	{
 		pgBackup *backup = (pgBackup *) parray_get(backups, i);
-
 		/* don't use incomplete nor different timeline backup */
 		if (backup->status != BACKUP_STATUS_OK ||
 					backup->tli != base_backup->tli)

@@ -20,6 +20,7 @@
 #include "catalog/pg_control.h"
 #include "libpq/pqsignal.h"
 #include "pgut/pgut-port.h"
+#include "parsexlog.h"
 
 /* wait 10 sec until WAL archive complete */
 #define TIMEOUT_ARCHIVE		10
@@ -29,7 +30,8 @@ static int server_version = 0;
 
 static bool		 in_backup = false;	/* TODO: more robust logic */
 /* List of commands to execute at error processing for snapshot */
-static parray	*cleanup_list;
+ControlFileData control_file;
+parray			*backup_files_list; /* backup file list from non-snapshot */
 
 /*
  * Backup routines
@@ -45,16 +47,19 @@ static bool pg_is_standby(void);
 static void get_lsn(PGresult *res, XLogRecPtr *lsn);
 static void get_xid(PGresult *res, uint32 *xid);
 
-static bool dirExists(const char *path);
-
 static void add_files(parray *files, const char *root, bool add_root, bool is_pgdata);
-static int strCompare(const void *str1, const void *str2);
 static void create_file_list(parray *files,
 							 const char *root,
 							 const char *subdir,
 							 const char *prefix,
 							 bool is_append);
 static TimeLineID get_current_timeline(void);
+static TimeLineHistoryEntry *
+getTimelineHistory(ControlFileData *controlFile, int *nentries);
+static TimeLineHistoryEntry *
+rewind_parseTimeLineHistory(char *buffer, TimeLineID targetTLI, int *nentries);
+static void wait_for_archive(pgBackup *backup, const char *sql);
+
 
 /*
  * Take a backup of database and return the list of files backed up.
@@ -63,7 +68,7 @@ static parray *
 do_backup_database(parray *backup_list, pgBackupOption bkupopt)
 {
 	int			i;
-	parray	   *files;				/* backup file list from non-snapshot */
+	parray	   *files = NULL;
 	parray	   *prev_files = NULL;	/* file list of previous database backup */
 	FILE	   *fp;
 	char		path[MAXPGPATH];
@@ -75,6 +80,7 @@ do_backup_database(parray *backup_list, pgBackupOption bkupopt)
 
 	/* repack the options */
 	bool	smooth_checkpoint = bkupopt.smooth_checkpoint;
+	pgBackup   *prev_backup = NULL;
 
 	/* Block backup operations on a standby */
 	if (pg_is_standby())
@@ -159,8 +165,6 @@ do_backup_database(parray *backup_list, pgBackupOption bkupopt)
 	 */
 	if (current.backup_mode == BACKUP_MODE_DIFF_PAGE)
 	{
-		pgBackup   *prev_backup;
-
 		/* find last completed database backup */
 		prev_backup = catalog_get_last_data_backup(backup_list, current.tli);
 		pgBackupGetPath(prev_backup, prev_file_txt, lengthof(prev_file_txt),
@@ -176,218 +180,59 @@ do_backup_database(parray *backup_list, pgBackupOption bkupopt)
 	}
 
 	/* initialize backup list from non-snapshot */
-	files = parray_new();
-	join_path_components(path, backup_path, SNAPSHOT_SCRIPT_FILE);
+	backup_files_list = parray_new();
 
-	/*
-	 * Check the existence of the snapshot-script.
-	 * backup use snapshot when snapshot-script exists.
-	 */
-	if (fileExists(path))
+	/* list files with the logical path. omit $PGDATA */
+	add_files(backup_files_list, pgdata, false, true);
+
+	/* backup files */
+	pgBackupGetPath(&current, path, lengthof(path), DATABASE_DIR);
+
+	/* build pagemaps if diff mode */
+	if (current.backup_mode == BACKUP_MODE_DIFF_PAGE)
 	{
-		parray		*tblspc_list;	/* list of name of TABLESPACE backup from snapshot */
-		parray		*tblspcmp_list;	/* list of mounted directory of TABLESPACE in snapshot volume */
-		PGresult	*tblspc_res;	/* contain spcname and oid in TABLESPACE */
-
-		tblspc_list = parray_new();
-		tblspcmp_list = parray_new();
-		cleanup_list = parray_new();
-
-		/*
-		 * append 'pg_tblspc' to list of directory excluded from copy.
-		 * because DB cluster and TABLESPACE are copied separately.
-		 */
-		for (i = 0; pgdata_exclude[i]; i++);	/* find first empty slot */
-		pgdata_exclude[i] = PG_TBLSPC_DIR;
-
-		/*
-		 * when DB cluster is not contained in the backup from the snapshot,
-		 * DB cluster is added to the backup file list from non-snapshot.
-		 */
-		parray_qsort(tblspc_list, strCompare);
-		if (parray_bsearch(tblspc_list, "PG-DATA", strCompare) == NULL)
-			add_files(files, pgdata, false, true);
-		else
-			/* remove the detected tablespace("PG-DATA") from tblspc_list */
-			parray_rm(tblspc_list, "PG-DATA", strCompare);
-
-		/*
-		 * select the TABLESPACE backup from non-snapshot,
-		 * and append TABLESPACE to the list backup from non-snapshot.
-		 * TABLESPACE name and oid is obtained by inquiring of the database.
-		 */
-
-		reconnect();
-		tblspc_res = execute("SELECT spcname, oid FROM pg_tablespace WHERE "
-			"spcname NOT IN ('pg_default', 'pg_global') ORDER BY spcname ASC", 0, NULL);
-		disconnect();
-		for (i = 0; i < PQntuples(tblspc_res); i++)
+		int current_tli_index = -1;
+		timeline_history = getTimelineHistory(&control_file, &timeline_num_entries);
+		for (i = 0; i < timeline_num_entries; i++)
 		{
-			char *name = PQgetvalue(tblspc_res, i, 0);
-			char *oid = PQgetvalue(tblspc_res, i, 1);
-
-			/* when not found, append it to the backup list from non-snapshot */
-			if (parray_bsearch(tblspc_list, name, strCompare) == NULL)
-			{
-				char dir[MAXPGPATH];
-				join_path_components(dir, pgdata, PG_TBLSPC_DIR);
-				join_path_components(dir, dir, oid);
-				add_files(files, dir, true, false);
+			if (timeline_history[i].tli == current.tli) {
+				current_tli_index = i;
+				printf("Find timeline index\n");
+				break;
 			}
-			else
-				/* remove the detected tablespace from tblspc_list */
-				parray_rm(tblspc_list, name, strCompare);
 		}
+		if (current_tli_index < 0) {
+			printf("Can't find timeline index\n");
+			exit(1);
+		}
+		parray_qsort(backup_files_list, pgFileComparePathDesc);
+		/* need last full segment */
+		wait_for_archive(&current, "SELECT * FROM pg_switch_xlog()");
 
-		/*
-		 * tblspc_list is not empty,
-		 * so snapshot-script output the tablespace name that not exist.
-		 */
-		if (parray_num(tblspc_list) > 0)
-			elog(ERROR_SYSTEM, _("snapshot-script output the name of tablespace that not exist"));
-
-		/* clear array */
-		parray_walk(tblspc_list, free);
-		parray_free(tblspc_list);
-
-		/* backup files from non-snapshot */
-		pgBackupGetPath(&current, path, lengthof(path), DATABASE_DIR);
-		backup_files(pgdata, path, files, prev_files, lsn, current.compress_data, NULL);
-
-		/* notify end of backup */
-		pg_stop_backup(&current);
-
-		/* create file list of non-snapshot objects */
-		create_file_list(files, pgdata, DATABASE_FILE_LIST, NULL, false);
-
-		/* backup files from snapshot volume */
-		for (i = 0; i < parray_num(tblspcmp_list); i++)
+		/* for debug now, maybe need remove*/
+		if (verbose)
 		{
-			char *spcname;
-			char *mp = NULL;
-			char *item = (char *) parray_get(tblspcmp_list, i);
-			parray *snapshot_files = parray_new();
-
-			/*
-			 * obtain the TABLESPACE name and the directory where it is stored.
-			 * Note: strtok() replace the delimiter to '\0'. but no problem because
-			 *       it doesn't use former value
-			 */
-			if ((spcname = strtok(item, "=")) == NULL || (mp = strtok(NULL, "\0")) == NULL)
-				elog(ERROR_SYSTEM, _("snapshot-script output illegal format: %s"), item);
-
-			if (verbose)
-			{
-				printf(_("========================================\n"));
-				printf(_("backup files from snapshot: \"%s\"\n"), spcname);
-			}
-
-			/* tablespace storage directory not exist */
-			if (!dirExists(mp))
-				elog(ERROR_SYSTEM, _("tablespace storage directory doesn't exist: %s"), mp);
-
-			/*
-			 * create the previous backup file list to take differential backup
-			 * from the snapshot volume.
-			 */
-			if (prev_files != NULL)
-				prev_files = dir_read_file_list(mp, prev_file_txt);
-
-			/* when DB cluster is backup from snapshot, it backup from the snapshot */
-			if (strcmp(spcname, "PG-DATA") == 0)
-			{
-				/* append DB cluster to backup file list */
-				add_files(snapshot_files, mp, false, true);
-				/* backup files of DB cluster from snapshot volume */
-				backup_files(mp, path, snapshot_files, prev_files, lsn, current.compress_data, NULL);
-				/* create file list of snapshot objects (DB cluster) */
-				create_file_list(snapshot_files, mp, DATABASE_FILE_LIST,
-								 NULL, true);
-				/* remove the detected tablespace("PG-DATA") from tblspcmp_list */
-				parray_rm(tblspcmp_list, "PG-DATA", strCompare);
-				i--;
-			}
-			/* backup TABLESPACE from snapshot volume */
-			else
-			{
-				int j;
-
-				/*
-				 * obtain the oid from TABLESPACE information acquired by inquiring of database.
-				 * and do backup files of TABLESPACE from snapshot volume.
-				 */
-				for (j = 0; j < PQntuples(tblspc_res); j++)
-				{
-					char  dest[MAXPGPATH];
-					char  prefix[MAXPGPATH];
-					char *name = PQgetvalue(tblspc_res, j, 0);
-					char *oid = PQgetvalue(tblspc_res, j, 1);
-
-					if (strcmp(spcname, name) == 0)
-					{
-						/* append TABLESPACE to backup file list */
-						add_files(snapshot_files, mp, true, false);
-
-						/* backup files of TABLESPACE from snapshot volume */
-						join_path_components(prefix, PG_TBLSPC_DIR, oid);
-						join_path_components(dest, path, prefix);
-						backup_files(mp, dest, snapshot_files, prev_files, lsn, current.compress_data, prefix);
-
-						/* create file list of snapshot objects (TABLESPACE) */
-						create_file_list(snapshot_files, mp, DATABASE_FILE_LIST,
-										 prefix, true);
-						/*
-						 * Remove the detected tablespace("PG-DATA") from
-						 * tblspcmp_list.
-						 */
-						parray_rm(tblspcmp_list, spcname, strCompare);
-						i--;
-						break;
-					}
-				}
-			}
-			parray_concat(files, snapshot_files);
+			printf("extractPageMap\n");
+			printf("current_tli_index:%X  current_tli:%X\n", current_tli_index, current.tli);
+			printf("prev_backup->start_lsn: %X/%X\n", (uint32) (prev_backup->start_lsn >> 32), (uint32) (prev_backup->start_lsn));
+			printf("current.start_lsn: %X/%X\n", (uint32) (current.start_lsn >> 32), (uint32) (current.start_lsn));
 		}
-
-		/*
-		 * tblspcmp_list is not empty,
-		 * so snapshot-script output the tablespace name that not exist.
-		 */
-		if (parray_num(tblspcmp_list) > 0)
-			elog(ERROR_SYSTEM, _("snapshot-script output the name of tablespace that not exist"));
-
-		/* clear array */
-		parray_walk(tblspcmp_list, free);
-		parray_free(tblspcmp_list);
-
-
-		/* don't use 'parray_walk'. element of parray not allocate memory by malloc */
-		parray_free(cleanup_list);
-		PQclear(tblspc_res);
+		extractPageMap(arclog_path, prev_backup->start_lsn, current_tli_index,
+					   current.start_lsn);
 	}
-	/* when snapshot-script not exist, DB cluster and TABLESPACE are backup
-	 * at same time.
-	 */
-	else
-	{
-		/* list files with the logical path. omit $PGDATA */
-		add_files(files, pgdata, false, true);
 
-		/* backup files */
-		pgBackupGetPath(&current, path, lengthof(path), DATABASE_DIR);
-		backup_files(pgdata, path, files, prev_files, lsn, current.compress_data, NULL);
+	backup_files(pgdata, path, backup_files_list, prev_files, lsn, current.compress_data, NULL);
 
-		/* notify end of backup */
-		pg_stop_backup(&current);
+	/* notify end of backup */
+	pg_stop_backup(&current);
 
-		/* create file list */
-		create_file_list(files, pgdata, DATABASE_FILE_LIST, NULL, false);
-	}
+	/* create file list */
+	create_file_list(backup_files_list, pgdata, DATABASE_FILE_LIST, NULL, false);
 
 	/* print summary of size of backup mode files */
-	for (i = 0; i < parray_num(files); i++)
+	for (i = 0; i < parray_num(backup_files_list); i++)
 	{
-		pgFile *file = (pgFile *) parray_get(files, i);
+		pgFile *file = (pgFile *) parray_get(backup_files_list, i);
 		if (!S_ISREG(file->mode))
 			continue;
 		/*
@@ -408,7 +253,7 @@ do_backup_database(parray *backup_list, pgBackupOption bkupopt)
 		printf(_("========================================\n"));
 	}
 
-	return files;
+	return backup_files_list;
 }
 
 
@@ -626,6 +471,7 @@ wait_for_archive(pgBackup *backup, const char *sql)
 	int				try_count;
 	XLogRecPtr		lsn;
 	TimeLineID		tli;
+	XLogSegNo	targetSegNo;
 
 	reconnect();
 	res = execute(sql, 0, NULL);
@@ -651,12 +497,13 @@ wait_for_archive(pgBackup *backup, const char *sql)
 	}
 
 	/* As well as WAL file name */
-	xlog_fname(file_name, tli, lsn);
+	XLByteToSeg(lsn, targetSegNo);
+	XLogFileName(file_name, tli, targetSegNo);
 
 	snprintf(ready_path, lengthof(ready_path),
 		"%s/pg_xlog/archive_status/%s.ready", pgdata,
 			 file_name);
-	elog(LOG, "%s() wait for %s", __FUNCTION__, ready_path);
+	printf("%s() wait for %s\n", __FUNCTION__, ready_path);
 
 	PQclear(res);
 
@@ -672,6 +519,7 @@ wait_for_archive(pgBackup *backup, const char *sql)
 	while (fileExists(ready_path))
 	{
 		sleep(1);
+		printf("QQQ\n");
 		if (interrupted)
 			elog(ERROR_INTERRUPTED,
 				_("interrupted during waiting for WAL archiving"));
@@ -763,22 +611,6 @@ fileExists(const char *path)
 	if (stat(path, &buf) == -1 && errno == ENOENT)
 		return false;
 	else if (!S_ISREG(buf.st_mode))
-		return false;
-	else
-		return true;
-}
-
-/*
- * Return true if the path is a existing directory.
- */
-static bool
-dirExists(const char *path)
-{
-	struct stat buf;
-
-	if (stat(path, &buf) == -1 && errno == ENOENT)
-		return false;
-	else if (S_ISREG(buf.st_mode))
 		return false;
 	else
 		return true;
@@ -951,6 +783,10 @@ backup_files(const char *from_root,
 						printf(_("skip\n"));
 					continue;
 				}
+
+				/* if the file was not in the previous backup simply copy it  */
+				if (prev_file == NULL)
+					file->is_datafile = false;
 			}
 
 			/*
@@ -1053,15 +889,6 @@ add_files(parray *files, const char *root, bool add_root, bool is_pgdata)
 }
 
 /*
- * Comparison function for parray_bsearch() compare the character string.
- */
-static int
-strCompare(const void *str1, const void *str2)
-{
-	return strcmp(*(char **) str1, *(char **) str2);
-}
-
-/*
  * Output the list of files to backup catalog
  */
 static void
@@ -1088,6 +915,44 @@ create_file_list(parray *files,
 }
 
 /*
+ * Check CRC of control file
+ */
+static void
+checkControlFile(ControlFileData *ControlFile)
+{
+	pg_crc32c	crc;
+
+	/* Calculate CRC */
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc, (char *) ControlFile, offsetof(ControlFileData, crc));
+	FIN_CRC32C(crc);
+
+	/* And simply compare it */
+	if (!EQ_CRC32C(crc, ControlFile->crc)) {
+		printf("unexpected control file CRC\n");
+		exit(1);
+	}
+}
+
+/*
+ * Verify control file contents in the buffer src, and copy it to *ControlFile.
+ */
+static void
+digestControlFile(ControlFileData *ControlFile, char *src, size_t size)
+{
+	if (size != PG_CONTROL_SIZE) {
+		printf("unexpected control file size %d, expected %d\n",
+				 (int) size, PG_CONTROL_SIZE);
+		exit(1);
+	}
+
+	memcpy(ControlFile, src, sizeof(ControlFileData));
+
+	/* Additional checks on control file */
+	checkControlFile(ControlFile);
+}
+
+/*
  * Scan control file of given cluster at obtain the current timeline
  * since last checkpoint that occurred on it.
  */
@@ -1096,7 +961,6 @@ get_current_timeline(void)
 {
 	char	   *buffer;
 	size_t		size;
-	ControlFileData control_file;
 
 	/* First fetch file... */
 	buffer = slurpFile(pgdata, "global/pg_control", &size);
@@ -1105,8 +969,243 @@ get_current_timeline(void)
     if (size != PG_CONTROL_SIZE)
 		elog(ERROR_CORRUPTED, "unexpected control file size %d, expected %d\n",
 			 (int) size, PG_CONTROL_SIZE);
-	memcpy(&control_file, buffer, sizeof(ControlFileData));
+
+	digestControlFile(&control_file, buffer, size);
+	pg_free(buffer);
 
 	/* Finally return the timeline wanted */
 	return control_file.checkPointCopy.ThisTimeLineID;
+}
+
+
+/*
+ * Try to read a timeline's history file.
+ *
+ * If successful, return the list of component TLIs (the given TLI followed by
+ * its ancestor TLIs).  If we can't find the history file, assume that the
+ * timeline has no parents, and return a list of just the specified timeline
+ * ID.
+ */
+static TimeLineHistoryEntry *
+rewind_parseTimeLineHistory(char *buffer, TimeLineID targetTLI, int *nentries)
+{
+	char	   *fline;
+	TimeLineHistoryEntry *entry;
+	TimeLineHistoryEntry *entries = NULL;
+	int			nlines = 0;
+	TimeLineID	lasttli = 0;
+	XLogRecPtr	prevend;
+	char	   *bufptr;
+	bool		lastline = false;
+
+	/*
+	 * Parse the file...
+	 */
+	prevend = InvalidXLogRecPtr;
+	bufptr = buffer;
+	while (!lastline)
+	{
+		char	   *ptr;
+		TimeLineID	tli;
+		uint32		switchpoint_hi;
+		uint32		switchpoint_lo;
+		int			nfields;
+
+		fline = bufptr;
+		while (*bufptr && *bufptr != '\n')
+			bufptr++;
+		if (!(*bufptr))
+			lastline = true;
+		else
+			*bufptr++ = '\0';
+
+		/* skip leading whitespace and check for # comment */
+		for (ptr = fline; *ptr; ptr++)
+		{
+			if (!isspace((unsigned char) *ptr))
+				break;
+		}
+		if (*ptr == '\0' || *ptr == '#')
+			continue;
+
+		nfields = sscanf(fline, "%u\t%X/%X", &tli, &switchpoint_hi, &switchpoint_lo);
+
+		if (nfields < 1)
+		{
+			/* expect a numeric timeline ID as first field of line */
+			fprintf(stderr, _("syntax error in history file: %s\n"), fline);
+			fprintf(stderr, _("Expected a numeric timeline ID.\n"));
+			exit(1);
+		}
+		if (nfields != 3)
+		{
+			fprintf(stderr, _("syntax error in history file: %s\n"), fline);
+			fprintf(stderr, _("Expected a transaction log switchpoint location.\n"));
+			exit(1);
+		}
+		if (entries && tli <= lasttli)
+		{
+			fprintf(stderr, _("invalid data in history file: %s\n"), fline);
+			fprintf(stderr, _("Timeline IDs must be in increasing sequence.\n"));
+			exit(1);
+		}
+
+		lasttli = tli;
+
+		nlines++;
+		entries = pg_realloc(entries, nlines * sizeof(TimeLineHistoryEntry));
+
+		entry = &entries[nlines - 1];
+		entry->tli = tli;
+		entry->begin = prevend;
+		entry->end = ((uint64) (switchpoint_hi)) << 32 | (uint64) switchpoint_lo;
+		prevend = entry->end;
+		//printf("begin:%X end:%X\n", entry->begin, entry->end);
+		/* we ignore the remainder of each line */
+	}
+
+	if (entries && targetTLI <= lasttli)
+	{
+		fprintf(stderr, _("invalid data in history file\n"));
+		fprintf(stderr, _("Timeline IDs must be less than child timeline's ID.\n"));
+		exit(1);
+	}
+
+	/*
+	 * Create one more entry for the "tip" of the timeline, which has no entry
+	 * in the history file.
+	 */
+	nlines++;
+	if (entries)
+		entries = pg_realloc(entries, nlines * sizeof(TimeLineHistoryEntry));
+	else
+		entries = pg_malloc(1 * sizeof(TimeLineHistoryEntry));
+
+	entry = &entries[nlines - 1];
+	entry->tli = targetTLI;
+	entry->begin = prevend;
+	entry->end = InvalidXLogRecPtr;
+
+	*nentries = nlines;
+	return entries;
+}
+
+
+/*
+ * Retrieve timeline history for given control file which should behold
+ * either source or target.
+ */
+static TimeLineHistoryEntry *
+getTimelineHistory(ControlFileData *controlFile, int *nentries)
+{
+	TimeLineHistoryEntry   *history;
+	TimeLineID				tli;
+	int		i;
+
+	tli = controlFile->checkPointCopy.ThisTimeLineID;
+
+	/*
+	 * Timeline 1 does not have a history file, so there is no need to check and
+	 * fake an entry with infinite start and end positions.
+	 */
+	if (tli == 1)
+	{
+		history = (TimeLineHistoryEntry *) pg_malloc(sizeof(TimeLineHistoryEntry));
+		history->tli = tli;
+		history->begin = history->end = InvalidXLogRecPtr;
+		*nentries = 1;
+	}
+	else
+	{
+		char		path[MAXPGPATH];
+		char	   *histfile;
+
+		TLHistoryFilePath(path, tli);
+
+		/* Get history file from appropriate source */
+		histfile = slurpFile(pgdata, path, NULL);
+		history = rewind_parseTimeLineHistory(histfile, tli, nentries);
+		pg_free(histfile);
+	}
+
+	if (verbose)
+	{
+		printf("Timeline history:\n");
+		/*
+		 * Print the target timeline history.
+		 */
+		for (i = 0; i < *nentries; i++)
+		{
+			TimeLineHistoryEntry *entry;
+
+			entry = &history[i];
+			printf("%d: %X/%X - %X/%X\n", entry->tli,
+				(uint32) (entry->begin >> 32), (uint32) (entry->begin),
+				(uint32) (entry->end >> 32), (uint32) (entry->end));
+		}
+	}
+	return history;
+}
+
+
+/*
+ * A helper function to create the path of a relation file and segment.
+ *
+ * The returned path is palloc'd
+ */
+static char *
+datasegpath(RelFileNode rnode, ForkNumber forknum, BlockNumber segno)
+{
+	char	   *path;
+	char	   *segpath;
+
+	path = relpathperm(rnode, forknum);
+	if (segno > 0)
+	{
+		segpath = psprintf("%s.%u", path, segno);
+		pfree(path);
+		return segpath;
+	}
+	else
+		return path;
+}
+
+/*
+ * This callback gets called while we read the WAL in the target, for every
+ * block that have changed in the target system. It makes note of all the
+ * changed blocks in the pagemap of the file.
+ */
+void
+arman_process_block_change(ForkNumber forknum, RelFileNode rnode, BlockNumber blkno)
+{
+	char		*path;
+	char		*rel_path;
+	BlockNumber blkno_inseg;
+	int			segno;
+	pgFile		*file_item;
+
+	segno = blkno / RELSEG_SIZE;
+	blkno_inseg = blkno % RELSEG_SIZE;
+
+	rel_path = datasegpath(rnode, forknum, segno);
+	path = pg_malloc(strlen(rel_path)+strlen(pgdata)+2);
+	sprintf(path, "%s/%s", pgdata, rel_path);
+	file_item = (pgFile *) parray_bsearch(backup_files_list, path, pgFileCharComparePath);
+
+	if (file_item)
+	{
+		file_item = *(pgFile **)file_item;
+		datapagemap_add(&file_item->pagemap, blkno_inseg);
+	}
+	else
+	{
+		/*
+		 * If we don't have any record of this file in the file map, it means
+		 * that it's a relation that doesn't exist in the source system, and
+		 * it was subsequently removed in the target system, too. We can
+		 * safely ignore it.
+		 */
+	}
+	pg_free(path);
+	pg_free(rel_path);
 }

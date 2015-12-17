@@ -17,6 +17,7 @@
 #include <time.h>
 
 #include "pgut/pgut-port.h"
+#include "datapagemap.h"
 
 /* directory exclusion list for backup mode listing */
 const char *pgdata_exclude[] =
@@ -78,7 +79,7 @@ pgFileNew(const char *path, bool omit_symlink)
 			strerror(errno));
 	}
 
-	file = (pgFile *) pgut_malloc(offsetof(pgFile, path) + strlen(path) + 1);
+	file = (pgFile *) pgut_malloc(sizeof(pgFile));
 
 	file->mtime = st.st_mtime;
 	file->size = st.st_size;
@@ -88,6 +89,9 @@ pgFileNew(const char *path, bool omit_symlink)
 	file->crc = 0;
 	file->is_datafile = false;
 	file->linked = NULL;
+	file->pagemap.bitmap = NULL;
+	file->pagemap.bitmapsize = 0;
+	file->path = pgut_malloc(strlen(path) + 1);
 	strcpy(file->path, path);		/* enough buffer size guaranteed */
 
 	return file;
@@ -166,6 +170,7 @@ pgFileFree(void *file)
 	if (file == NULL)
 		return;
 	free(((pgFile *)file)->linked);
+	free(((pgFile *)file)->path);
 	free(file);
 }
 
@@ -177,6 +182,17 @@ pgFileComparePath(const void *f1, const void *f2)
 	pgFile *f2p = *(pgFile **)f2;
 
 	return strcmp(f1p->path, f2p->path);
+}
+
+/* Compare two pgFile with their path in ascending order of ASCII code. */
+int
+pgFileCharComparePath(const void *f1, const void *f2)
+{
+	//pgFile *f1p = *(pgFile **)f1;
+	pgFile *f2p = *(pgFile **)f2;
+	//printf("f1:%s f2:%s strcmp:%i\n", f2p->path, *(char **)f1, strcmp(f2p->path, *(char **)f1));
+
+	return strcmp(f2p->path, *(char **)f1);
 }
 
 /* Compare two pgFile with their path in descending order of ASCII code. */
@@ -539,8 +555,10 @@ dir_read_file_list(const char *root, const char *file_txt)
 		}
 		tm.tm_isdst = -1;
 
-		file = (pgFile *) pgut_malloc(offsetof(pgFile, path) +
-					(root ? strlen(root) + 1 : 0) + strlen(path) + 1);
+		file = (pgFile *) pgut_malloc(sizeof(pgFile));
+		file->path = pgut_malloc((root ? strlen(root) + 1 : 0) + strlen(path) + 1);
+		file->pagemap.bitmap = NULL;
+		file->pagemap.bitmapsize = 0;
 
 		tm.tm_year -= 1900;
 		tm.tm_mon -= 1;
