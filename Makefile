@@ -37,7 +37,8 @@ endif # ASCIIDOC
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS = $(libpq_pgport)
 
-REGRESS = init option show delete purge backup backup_management restore restore_checksum backup_from_standby arc_srv_log_management
+#not supported test: purge 
+REGRESS = init option show delete backup backup_management restore restore_checksum backup_from_standby arc_srv_log_management
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

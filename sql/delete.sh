@@ -99,8 +99,9 @@ THIRD_BACKUP_DATE=`date +"%Y-%m-%d %H:%M:%S"`
 pg_arman backup -B ${BACKUP_PATH} -b page -Z -p ${TEST_PGPORT} -d postgres --quiet
 pg_arman validate -B ${BACKUP_PATH} --quiet
 pgbench -p ${TEST_PGPORT} >> ${TEST_BASE}/pgbench.log 2>&1
-pg_arman backup -B ${BACKUP_PATH} -b archive -Z -p ${TEST_PGPORT} -d postgres --quiet
-pg_arman validate -B ${BACKUP_PATH} --quiet
+#TODO: pg_arman not support archive backup
+#pg_arman backup -B ${BACKUP_PATH} -b archive -Z -p ${TEST_PGPORT} -d postgres --quiet
+#pg_arman validate -B ${BACKUP_PATH} --quiet
 FOURTH_BACKUP_DATE=`date +"%Y-%m-%d %H:%M:%S"`
 pg_arman backup -B ${BACKUP_PATH} -b full -Z -p ${TEST_PGPORT} -d postgres --quiet
 pg_arman validate -B ${BACKUP_PATH} --quiet

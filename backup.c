@@ -278,6 +278,11 @@ do_backup(pgBackupOption bkupopt)
 		elog(ERROR_ARGS, _("Required parameter not specified: BACKUP_MODE "
 						   "(-b, --backup-mode)"));
 
+	/* ARCLOG_PATH is required only when backup archive WAL */
+	if (HAVE_ARCLOG(&current) && arclog_path == NULL)
+		elog(ERROR_ARGS,
+			_("required parameter not specified: ARCLOG_PATH (-A, --arclog-path)"));
+
 #ifndef HAVE_LIBZ
 	if (current.compress_data)
 	{
@@ -503,7 +508,8 @@ wait_for_archive(pgBackup *backup, const char *sql)
 	snprintf(ready_path, lengthof(ready_path),
 		"%s/pg_xlog/archive_status/%s.ready", pgdata,
 			 file_name);
-	printf("%s() wait for %s\n", __FUNCTION__, ready_path);
+	if (verbose)
+		printf("%s() wait for %s\n", __FUNCTION__, ready_path);
 
 	PQclear(res);
 
@@ -519,7 +525,6 @@ wait_for_archive(pgBackup *backup, const char *sql)
 	while (fileExists(ready_path))
 	{
 		sleep(1);
-		printf("QQQ\n");
 		if (interrupted)
 			elog(ERROR_INTERRUPTED,
 				_("interrupted during waiting for WAL archiving"));

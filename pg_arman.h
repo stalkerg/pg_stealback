@@ -167,6 +167,7 @@ typedef struct pgBackupOption
 /* special values of pgBackup */
 #define KEEP_INFINITE			(INT_MAX)
 #define BYTES_INVALID			(-1)
+#define HAVE_ARCLOG(backup)		((backup)->backup_mode >= BACKUP_MODE_DIFF_PAGE)
 
 typedef struct pgTimeLine
 {

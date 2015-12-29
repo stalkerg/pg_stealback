@@ -85,10 +85,10 @@ echo '###### backup command failure without arclog path option ######'
 pg_arman backup -B ${BACKUP_PATH} -b full -p ${TEST_PGPORT};echo $?
 echo ''
 
-echo '###### COMMAND OPTION TEST-0005 ######'
-echo '###### backup command failure without srvlog path option ######'
-pg_arman backup -B ${BACKUP_PATH} -A ${ARCLOG_PATH} -b full -s -p ${TEST_PGPORT};echo $?
-echo ''
+#echo '###### COMMAND OPTION TEST-0005 ######'
+#echo '###### backup command failure without srvlog path option ######'
+#pg_arman backup -B ${BACKUP_PATH} -A ${ARCLOG_PATH} -b full -s -p ${TEST_PGPORT};echo $?
+#echo ''
 
 echo '###### COMMAND OPTION TEST-0006 ######'
 echo '###### backup command failure without backup mode option ######'
