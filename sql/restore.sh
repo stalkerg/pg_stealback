@@ -271,7 +271,6 @@ pg_arman restore -B ${BACKUP_PATH} --quiet;echo $?
 pg_ctl start -w -t 600 > /dev/null 2>&1
 psql --no-psqlrc -p ${TEST_PGPORT} -d db0010 -c "SELECT * FROM pgbench_branches;" > ${TEST_BASE}/TEST-0010-after.out
 diff ${TEST_BASE}/TEST-0010-before.out ${TEST_BASE}/TEST-0010-after.out
-echo ''
 
 
 # clean up the temporal test data

@@ -112,6 +112,7 @@ else
 fi
 echo ''
 
+#TODO DELETE_DATE need get by awk from pg_arman show 
 echo '###### SHOW COMMAND TEST-0004 ######'
 echo '###### Status DELETED ######'
 init_catalog

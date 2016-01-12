@@ -17,6 +17,7 @@
 #include "catalog/pg_control.h"
 
 static void backup_online_files(bool re_recovery);
+static void restore_online_files(void);
 static void restore_database(pgBackup *backup);
 static void create_recovery_conf(const char *target_time,
 								 const char *target_xid,
@@ -201,6 +202,9 @@ base_backup_found:
 		restore_database(backup);
 		last_restored_index = i;
 	}
+
+	/* copy online WAL backup to $PGDATA/pg_xlog */
+	restore_online_files();
 
 	for (i = last_restored_index; i >= 0; i--)
 	{
@@ -415,7 +419,6 @@ restore_database(pgBackup *backup)
 		printf(_("restore backup completed\n"));
 }
 
-
 static void
 create_recovery_conf(const char *target_time,
 					 const char *target_xid,
@@ -495,6 +498,75 @@ backup_online_files(bool re_recovery)
 	dir_create_dir(work_path, DIR_PERMISSION);
 	dir_copy_files(pg_xlog_path, work_path);
 }
+
+static void
+restore_online_files(void)
+{
+	int		i;
+	int		num_skipped = 0;
+	char	root_backup[MAXPGPATH];
+	parray *files_backup;
+
+	/* get list of files in $BACKUP_PATH/backup/pg_xlog */
+	files_backup = parray_new();
+	snprintf(root_backup, lengthof(root_backup), "%s/%s/%s", backup_path,
+		RESTORE_WORK_DIR, PG_XLOG_DIR);
+	dir_list_file(files_backup, root_backup, NULL, true, false);
+
+	if (verbose && !check)
+	{
+		printf(_("----------------------------------------\n"));
+	}
+
+	elog(INFO, _("restoring online WAL files and server log files"));
+
+	/* restore online WAL */
+	for (i = 0; i < parray_num(files_backup); i++)
+	{
+		pgFile *file = (pgFile *) parray_get(files_backup, i);
+
+		if (S_ISDIR(file->mode))
+		{
+			char to_path[MAXPGPATH];
+			snprintf(to_path, lengthof(to_path), "%s/%s/%s", pgdata,
+				PG_XLOG_DIR, file->path + strlen(root_backup) + 1);
+			if (verbose && !check)
+				printf(_("create directory \"%s\"\n"),
+					file->path + strlen(root_backup) + 1);
+			if (!check)
+				dir_create_dir(to_path, DIR_PERMISSION);
+			goto show_progress;
+		}
+		else if(S_ISREG(file->mode))
+		{
+			char to_root[MAXPGPATH];
+			join_path_components(to_root, pgdata, PG_XLOG_DIR);
+			if (verbose && !check)
+				printf(_("restore \"%s\"\n"),
+					file->path + strlen(root_backup) + 1);
+			if (!check)
+				copy_file(root_backup, to_root, file, NO_COMPRESSION);
+		}
+
+show_progress:
+		/* print progress in non-verbose format */
+		if (verbose)
+		{
+			fprintf(stderr, _("Processed %d of %lu files, skipped %d"),
+					i + 1, (unsigned long) parray_num(files_backup), num_skipped);
+			if(i + 1 < (unsigned long) parray_num(files_backup))
+				fprintf(stderr, "\r");
+			else
+				fprintf(stderr, "\n");
+		}
+	}
+
+	/* cleanup */
+	parray_walk(files_backup, pgFileFree);
+	parray_free(files_backup);
+}
+
+
 
 
 /*
