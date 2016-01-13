@@ -39,7 +39,7 @@ PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS = $(libpq_pgport)
 
 #not supported test: purge 
-REGRESS = init option show delete backup backup_management restore restore_checksum backup_from_standby arc_srv_log_management
+REGRESS = init option show delete backup backup_management restore restore_checksum
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
