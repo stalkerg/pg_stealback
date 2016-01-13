@@ -18,6 +18,7 @@ SRCS = \
 	datapagemap.c \
 	parsexlog.c \
 	xlogreader.c \
+	controlfile.c \
 	pgut/pgut.c \
 	pgut/pgut-port.c
 OBJS = $(SRCS:.c=.o)
