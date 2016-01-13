@@ -37,6 +37,8 @@ static void print_backup_id(const pgBackup *backup);
 static void search_next_wal(const char *path,
 							XLogRecPtr *need_lsn,
 							parray *timelines);
+static int get_data_checksum_version(void);
+static int data_checksum_version;
 
 int
 do_restore(const char *target_time,
@@ -93,6 +95,10 @@ do_restore(const char *target_time,
 	if(!backups){
 		elog(ERROR_SYSTEM, _("can't process any more."));
 	}
+
+	data_checksum_version = get_data_checksum_version();
+	if (verbose)
+		printf("the database checksum version is %d", data_checksum_version);
 
 	cur_tli = get_current_timeline();
 	backup_tli = get_fullbackup_timeline(backups, rt);
@@ -363,7 +369,7 @@ restore_database(pgBackup *backup)
 
 		/* restore file */
 		if (!check)
-			restore_data_file(from_root, pgdata, file, backup->compress_data);
+			restore_data_file(from_root, pgdata, file, backup->compress_data, (data_checksum_version > 0));
 
 		/* print size of restored file */
 		if (verbose && !check)
@@ -722,6 +728,26 @@ satisfy_timeline(const parray *timelines, const pgBackup *backup)
 	}
 	return false;
 }
+
+/*
+ * get datapage checksum version of the current database.
+ */
+static int
+get_data_checksum_version(void)
+{
+	int			result;
+	char		*buffer;
+
+	buffer = read_control_file();
+
+	if(buffer != NULL)
+		result = (int) ((ControlFileData *) buffer)->data_checksum_version;
+	else
+		return -1;
+	pg_free(buffer);
+	return result;
+}
+
 
 /* get TLI of the current database */
 static TimeLineID

@@ -17,6 +17,8 @@
 #include "libpq/pqsignal.h"
 #include "storage/block.h"
 #include "storage/bufpage.h"
+#include "storage/checksum.h"
+#include "storage/checksum_impl.h"
 
 #ifdef HAVE_LIBZ
 #include <zlib.h>
@@ -444,7 +446,8 @@ void
 restore_data_file(const char *from_root,
 				  const char *to_root,
 				  pgFile *file,
-				  bool compress)
+				  bool compress,
+				  bool data_checksum_enabled)
 {
 	char				to_path[MAXPGPATH];
 	FILE			   *in;
@@ -616,6 +619,10 @@ restore_data_file(const char *from_root,
 		if (fseek(out, blknum * BLCKSZ, SEEK_SET) < 0)
 			elog(ERROR_SYSTEM, _("can't seek block %u of \"%s\": %s"),
 				blknum, to_path, strerror(errno));
+
+		if(data_checksum_enabled)
+			((PageHeader) page.data)->pd_checksum = pg_checksum_page((char *) page.data, blknum);
+
 		if (fwrite(page.data, 1, sizeof(page), out) != sizeof(page))
 			elog(ERROR_SYSTEM, _("can't write block %u of \"%s\": %s"),
 				blknum, file->path, strerror(errno));

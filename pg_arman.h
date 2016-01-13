@@ -306,7 +306,7 @@ extern void xlog_fname(char *fname, TimeLineID tli, XLogRecPtr lsn);
 extern bool backup_data_file(const char *from_root, const char *to_root,
 							 pgFile *file, const XLogRecPtr *lsn, bool compress);
 extern void restore_data_file(const char *from_root, const char *to_root,
-							  pgFile *file, bool compress);
+							  pgFile *file, bool compress, bool data_checksum_enabled);
 extern bool copy_file(const char *from_root, const char *to_root,
 					  pgFile *file, CompressionMode compress);
 
@@ -315,6 +315,9 @@ extern void time2iso(char *buf, size_t len, time_t time);
 extern const char *status2str(BackupStatus status);
 extern void remove_trailing_space(char *buf, int comment_mark);
 extern void remove_not_digit(char *buf, size_t len, const char *str);
+
+/* In pg_ctl.c */
+extern char *read_control_file(void);
 
 /* in status.c */
 extern bool is_pg_running(void);
