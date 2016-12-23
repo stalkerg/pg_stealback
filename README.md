@@ -1,7 +1,7 @@
-pg_probackup fork of pg_arman by Postgres Professional
+pg_stealback fork of pg_arman
 ========================================
 
-pg_probackup is a backup and recovery manager for PostgreSQL servers able to do
+pg_stealback is a backup and recovery manager for PostgreSQL servers able to do
 differential and full backup as well as restore a cluster to a
 state defined by a given recovery target. It is designed to perform
 periodic backups of an existing PostgreSQL server, combined with WAL
@@ -25,27 +25,27 @@ Download
 --------
 
 The latest version of this software can be found on the project website at
-https://github.com/postgrespro/pg_probackup.  Original fork of pg_probackup can be
+https://github.com/stalkerg/pg_stealback.  Original fork of pg_stealback can be
 found at https://github.com/michaelpq/pg_arman.
 
 Installation
 ------------
 
-Compiling pg_probackup requires a PostgreSQL installation to be in place
+Compiling pg_stealback requires a PostgreSQL installation to be in place
 as well as a raw source tree. Pass the path to the PostgreSQL source tree
 to make, in the top_srcdir variable:
 
-    make USE_PGXS=1 top_srcdir=<path to PostgreSQL source tree>
+	make USE_PGXS=1 top_srcdir=<path to PostgreSQL source tree>
 
 In addition, you must have pg_config in $PATH.
 
-The current version of pg_probackup is compatible with PostgreSQL 9.5 and
+The current version of pg_stealback is compatible with PostgreSQL 9.5 and
 upper versions.
 
 Platforms
 ---------
 
-pg_probackup has been tested on Linux and Unix-based platforms.
+pg_stealback has been tested on Linux and Unix-based platforms.
 
 Documentation
 -------------
@@ -55,28 +55,10 @@ All the documentation you can find [here](doc/pg_probackup.md).
 Regression tests
 ----------------
 
-For tests you must have python 2.7 or python 3.3 and higher. Also good idea
-is make virtual enviroment by `virtualenv`.   
-First of all you need to install `testgres` python module which contains useful
-functions to start postgres clusters and make queries:
+The test suite of pg_stealback is available in the code tree and can be
+launched in a way similar to common PostgreSQL extensions and modules:
 
-```
-pip install testgres
-```
-
-To run tests execute:
-
-```
-python -m unittest tests
-```
-
-from current (root of project) directory. If you want to run a specific postgres build then
-you should specify the path to your pg_config executable by setting PG_CONFIG
-environment variable:
-```
-export PG_CONFIG=/path/to/pg_config
-```
-
+	make installcheck
 
 Block level incremental backup
 ------------------------------
@@ -100,14 +82,14 @@ of these approach is requirement to have WAL archive.
 some overhead to PostgreSQL performance.  On our experiments it appears to be
 less than 3%.
 
-These two approaches were implemented in this fork of pg_probackup.  The second
+These two approaches were implemented in this fork of pg_stealback. The second
 approach requires [patch for PostgreSQL 9.5](https://gist.github.com/stalkerg/44703dbcbac1da08f448b7e6966646c0) or
 [patch for PostgreSQL 10](https://gist.github.com/stalkerg/ab833d94e2f64df241f1835651e06e4b).
 
 Testing block level incremental backup
 --------------------------------------
 
-You need build and install [PGPRO9_5 or PGPRO9_6 branch of PostgreSQL](https://github.com/postgrespro/postgrespro) or apply this patch to
+You need apply this patch to
 [PostgreSQL 9.5](https://gist.github.com/stalkerg/44703dbcbac1da08f448b7e6966646c0) or [PostgreSQL 10](https://gist.github.com/stalkerg/ab833d94e2f64df241f1835651e06e4b).
 
 ### Retrieving changed blocks from WAL archive
@@ -116,13 +98,12 @@ You need to enable WAL archive by adding following lines to postgresql.conf:
 
 ```
 wal_level = archive
-archive_mode = on
 archive_command = 'test ! -f /home/postgres/backup/wal/%f && cp %p /home/postgres/backup/wal/%f'
 ```
 
 Example backup (assuming PostgreSQL is running):
 ```bash
-# Init pg_aramn backup folder
+# Init pg_stealback backup folder
 pg_probackup init -B /home/postgres/backup
 # Make full backup with 2 thread and verbose mode.
 pg_probackup backup -B /home/postgres/backup -D /home/postgres/pgdata -b full -v -j 2
@@ -150,11 +131,12 @@ The advantage of this approach is that you don't have to save WAL archive.  You 
 ptrack_enable = on
 ```
 
-Also, some WALs still need to be fetched in order to get consistent backup.  pg_probackup can fetch them trough the streaming replication protocol.  Thus, you also need to [enable streaming replication connection](https://wiki.postgresql.org/wiki/Streaming_Replication).
+Also, some WALs still need to be fetched in order to get consistent backup.  pg_stealback can fetch them trough the streaming replication protocol.
+Thus, you also need to [enable streaming replication connection](https://wiki.postgresql.org/wiki/Streaming_Replication).
 
 Example backup (assuming PostgreSQL is running):
 ```bash
-# Init pg_aramn backup folder
+# Init pg_stealback backup folder
 pg_probackup init -B /home/postgres/backup
 # Make full backup with 2 thread and verbose mode.
 pg_probackup backup -B /home/postgres/backup -D /home/postgres/pgdata -b full -v -j 2 --stream
@@ -177,6 +159,6 @@ pg_probackup restore -B /home/postgres/backup -D /home/postgres/pgdata -j 4 --ve
 License
 -------
 
-pg_probackup can be distributed under the PostgreSQL license. See COPYRIGHT
+pg_stealback can be distributed under the PostgreSQL license. See COPYRIGHT
 file for more information. pg_arman is a fork of the existing project
 pg_rman, initially created and maintained by NTT and Itagaki Takahiro.
